@@ -65,10 +65,15 @@ impl IFixedPoint {
         // exp(self) = exp(Q * LN_2 + R)
         //           = exp(Q * LN_2) * exp(R)
         //           = 2^Q * exp(R)
+        // Q must round toward zero: `to_num` rounds toward -inf, which for
+        // negative args would leave R in [LN_2/2, 3 * LN_2/2].
         let q = self
             .safe_add(rounding)?
             .safe_div(LN_2)?
-            .checked_to_num::<i32>()?;
+            .to_fixed()
+            .round_to_zero()
+            .checked_to_num::<i32>()
+            .ok_or_else(with_context!(LendingError::CastOverflow))?;
         let r = self.safe_sub(Self::from_i64(q as i64).safe_mul(LN_2)?)?;
         let exp_r = exp_7_terms(r)?;
         match exp_r.checked_shift(q) {
@@ -149,6 +154,18 @@ pub mod tests {
             let exp_fixed = IFixedPoint::lit(x).checked_exp().unwrap().to_float();
             let exp_float = x.parse::<f64>().unwrap().exp();
             assert_eq_float!(exp_fixed, exp_float, 0.0001) // max 1bps error
+        }
+    }
+
+    #[test]
+    pub fn fixed_exp_negative_args_keep_reduced_arg_small() {
+        // The adaptive curve calls exp() with tiny negative args on every sync below
+        // target. Q must round toward zero so that R stays in [-LN_2/2, LN_2/2];
+        // otherwise R is close to LN_2 and the 7-term series undershoots by ~1e-5.
+        for x in ["-0.000001", "-0.0001", "-0.001", "-0.01", "-0.1", "-0.5", "-2"] {
+            let exp_fixed = IFixedPoint::lit(x).checked_exp().unwrap().to_float();
+            let exp_float = x.parse::<f64>().unwrap().exp();
+            assert_eq_float!(exp_fixed, exp_float, 1e-6);
         }
     }
 
